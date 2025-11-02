@@ -1,8 +1,8 @@
 const express = require("express");
 const router = express.Router();
 const multer = require("multer");
-const { CloudinaryStorage } = require("multer-storage-cloudinary");
-const cloudinary = require("cloudinary").v2;
+const path = require("path");
+const fs = require("fs");
 const auth = require("../middlewares/auth.middleware.js");
 const Caption = require("../models/caption.model.js");
 
@@ -10,32 +10,38 @@ const Caption = require("../models/caption.model.js");
 const fetch = (...args) =>
   import("node-fetch").then(({ default: fetch }) => fetch(...args));
 
+// Gemini API endpoint
 const GEMINI_API_URL =
   "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent";
 
-// 1. Cloudinary config
-cloudinary.config({
-  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
-  api_key: process.env.CLOUDINARY_API_KEY,
-  api_secret: process.env.CLOUDINARY_API_SECRET,
-});
-
-// 2. Multer storage (Cloudinary)
-const storage = new CloudinaryStorage({
-  cloudinary: cloudinary,
-  params: {
-    folder: "captionai_uploads",
-    allowed_formats: ["jpg", "png", "jpeg", "gif"],
+// multer setup
+const storage = multer.diskStorage({
+  destination: function (req, file, cb) {
+    const dir = path.join(__dirname, "..", "uploads");
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir);
+    cb(null, dir);
+  },
+  filename: function (req, file, cb) {
+    const unique = Date.now() + "-" + Math.round(Math.random() * 1e9);
+    cb(null, unique + path.extname(file.originalname));
   },
 });
 const upload = multer({ storage });
 
 /**
- * Generate caption using Gemini API from a Cloudinary image URL
+ * Generate caption using Gemini API
  */
-async function generateCaption(language, imageUrl) {
+async function generateCaption(language, imagePath) {
   try {
-    console.log("📸 Sending Cloudinary image URL to Gemini...");
+    console.log("📸 Sending image buffer to Gemini...");
+
+    const imgBuffer = fs.readFileSync(
+      path.join(__dirname, "..", imagePath.replace("/uploads/", "uploads/"))
+    );
+    const imgBase64 = imgBuffer.toString("base64");
+
+    console.log("Gemini API URL:", GEMINI_API_URL);
+    console.log("Gemini API Key present?:", process.env.GEMINI_API_KEY ? "✅ Yes" : "❌ No");
 
     const response = await fetch(`${GEMINI_API_URL}?key=${process.env.GEMINI_API_KEY}`, {
       method: "POST",
@@ -50,10 +56,9 @@ async function generateCaption(language, imageUrl) {
                 text: `Generate a descriptive caption in ${language}.`,
               },
               {
-                // Gemini supports URL for hosted images
                 inlineData: {
-                  mimeType: "image/jpeg",
-                  url: imageUrl,
+                  mimeType: "image/jpeg", // works for jpg/png
+                  data: imgBase64,
                 },
               },
             ],
@@ -83,18 +88,17 @@ async function generateCaption(language, imageUrl) {
 // 📌 create caption
 router.post("/", auth, upload.single("image"), async (req, res) => {
   try {
-    if (!req.file)
-      return res.status(400).json({ msg: "No image provided" });
+    if (!req.file) return res.status(400).json({ msg: "No image provided" });
 
     const { language = "en" } = req.body;
-    const imageUrl = req.file.path; // Cloudinary URL
+    const imagePath = "/uploads/" + req.file.filename;
 
-    const captionText = await generateCaption(language, imageUrl);
+    const captionText = await generateCaption(language, imagePath);
     console.log("✅ Generated caption:", captionText);
 
     const caption = new Caption({
       user: req.user.id,
-      imagePath: imageUrl,
+      imagePath,
       caption: captionText,
       language,
     });
@@ -126,7 +130,14 @@ router.delete("/:id", auth, async (req, res) => {
     if (item.user.toString() !== req.user.id)
       return res.status(403).json({ msg: "Not authorized" });
 
-    // No need to delete Cloudinary file unless you want
+    const filePath = path.join(
+      __dirname,
+      "..",
+      "uploads",
+      path.basename(item.imagePath)
+    );
+    if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+
     await item.deleteOne();
     res.json({ msg: "Deleted" });
   } catch (err) {
