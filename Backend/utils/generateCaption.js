@@ -1,31 +1,34 @@
 const fs = require("fs");
 const path = require("path");
 const multer = require("multer");
+const cloudinary = require("cloudinary").v2;
+const { CloudinaryStorage } = require("multer-storage-cloudinary");
 
 const fetch = (...args) =>
   import("node-fetch").then(({ default: fetch }) => fetch(...args));
+
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key: process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET,
+});
 
 // Gemini API endpoint
 const GEMINI_API_URL =
   "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent";
 
-const generateCaption = async (language, imagePath) => {
+const generateCaption = async (language, imageUrl) => {
   try {
-    console.log("📸 Sending image buffer to Gemini...");
+    console.log("📸 Fetching image from Cloudinary...");
 
-    const rel = imagePath.replace(/^\/+/, "");
-    const localPath = path.join(__dirname, "..", rel);
+    // Fetch image from Cloudinary URL
+    const imageResponse = await fetch(imageUrl);
+    const arrayBuffer = await imageResponse.arrayBuffer();
+    const buffer = Buffer.from(arrayBuffer);
+    const imgBase64 = buffer.toString("base64");
 
-    if (!fs.existsSync(localPath)) {
-      console.error("Image not found at", localPath);
-      return "Error generating caption (image not found).";
-    }
-
-    const imgBuffer = fs.readFileSync(localPath);
-    const imgBase64 = imgBuffer.toString("base64");
-
-    // detect mime type
-    const ext = path.extname(localPath).toLowerCase();
+    // detect mime type from URL
+    const ext = path.extname(imageUrl).toLowerCase();
     let mimeType = "image/jpeg";
     if (ext === ".png") mimeType = "image/png";
     else if (ext === ".gif") mimeType = "image/gif";
@@ -34,7 +37,7 @@ const generateCaption = async (language, imagePath) => {
     console.log("Gemini API URL:", GEMINI_API_URL);
     console.log(
       "Gemini API Key present?:",
-      process.env.GEMINI_API_KEY ? "✅ Yes" : "❌ No"
+      process.env.GEMINI_API_KEY ? "Yes" : "No"
     );
 
     const res = await fetch(
@@ -83,22 +86,31 @@ const generateCaption = async (language, imagePath) => {
   }
 };
 
-const storage = multer.diskStorage({
-  destination: function (req, file, cb) {
-    const dir = path.join(__dirname, "..", "uploads");
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    cb(null, dir);
-  },
-  filename: function (req, file, cb) {
-    const unique = Date.now() + "-" + Math.round(Math.random() * 1e9);
-    cb(null, unique + path.extname(file.originalname));
+const storage = new CloudinaryStorage({
+  cloudinary: cloudinary,
+  params: {
+    folder: "captions",
+    allowed_formats: ["jpg", "jpeg", "png", "gif", "webp"],
+    transformation: [{ width: 1000, height: 1000, crop: "limit" }], // Optional: limit image size
+    format: "jpg",
   },
 });
 
 const upload = multer({ storage });
 
+const deleteImage = async (publicId) => {
+  try {
+    await cloudinary.uploader.destroy(publicId);
+    return true;
+  } catch (error) {
+    console.error("Error deleting image from Cloudinary:", error);
+    return false;
+  }
+};
+
 module.exports = {
   generateCaption,
-  storage,
   upload,
+  deleteImage,
+  cloudinary,
 };
