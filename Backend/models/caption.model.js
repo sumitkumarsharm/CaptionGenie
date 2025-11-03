@@ -10,4 +10,11 @@ const CaptionSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+CaptionSchema.set("toJSON", {
+  transform: (doc, ret) => {
+    delete ret.__v;
+    return ret;
+  },
+});
+
 module.exports = mongoose.model("Caption", CaptionSchema);
